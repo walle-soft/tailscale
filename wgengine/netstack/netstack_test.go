@@ -10,6 +10,7 @@ import (
 
 	"gvisor.dev/gvisor/pkg/refs"
 	"inet.af/netaddr"
+	"tailscale.com/ipn/node"
 	"tailscale.com/net/packet"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/net/tstun"
@@ -27,24 +28,20 @@ func TestInjectInboundLeak(t *testing.T) {
 			t.Logf(format, args...)
 		}
 	}
+	parts := new(node.Parts)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
-		Tun:    tunDev,
-		Dialer: dialer,
+		Tun:     tunDev,
+		Dialer:  dialer,
+		SetPart: parts.SetPart,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer eng.Close()
-	ig, ok := eng.(wgengine.InternalsGetter)
-	if !ok {
-		t.Fatal("not an InternalsGetter")
-	}
-	tunWrap, magicSock, dns, ok := ig.GetInternals()
-	if !ok {
-		t.Fatal("failed to get internals")
-	}
+	parts.Engine.Set(eng)
 
-	ns, err := Create(logf, tunWrap, eng, magicSock, dialer, dns)
+	tunWrap := parts.Tun.Get()
+	ns, err := Create(logf, tunWrap, eng, parts.MagicSock.Get(), dialer, parts.DNSManager.Get())
 	if err != nil {
 		t.Fatal(err)
 	}

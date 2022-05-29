@@ -15,7 +15,9 @@ import (
 
 	"tailscale.com/control/controlclient"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store/mem"
+	"tailscale.com/net/tsdial"
 	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/empty"
@@ -297,16 +299,19 @@ func TestStateMachine(t *testing.T) {
 	c := qt.New(t)
 
 	logf := t.Logf
+	parts := new(node.Parts)
 	store := new(testStateStorage)
-	e, err := wgengine.NewFakeUserspaceEngine(logf, 0)
+	parts.StateStore.Set(store)
+	e, err := wgengine.NewFakeUserspaceEngine(logf, parts.SetPart)
 	if err != nil {
 		t.Fatalf("NewFakeUserspaceEngine: %v", err)
 	}
+	parts.Engine.Set(e)
 	t.Cleanup(e.Close)
 
 	cc := newMockControl(t)
 	t.Cleanup(func() { cc.preventLog.Set(true) }) // hacky way to pacify issue 3020
-	b, err := NewLocalBackend(logf, "logid", store, nil, e, 0)
+	b, err := NewLocalBackend(logf, "logid", parts, 0)
 	if err != nil {
 		t.Fatalf("NewLocalBackend: %v", err)
 	}
@@ -967,7 +972,11 @@ func TestWGEngineStatusRace(t *testing.T) {
 	eng, err := wgengine.NewFakeUserspaceEngine(logf, 0)
 	c.Assert(err, qt.IsNil)
 	t.Cleanup(eng.Close)
-	b, err := NewLocalBackend(logf, "logid", new(mem.Store), nil, eng, 0)
+	parts := new(node.Parts)
+	parts.StateStore.Set(new(mem.Store))
+	parts.Engine.Set(eng)
+	parts.Dialer.Set(new(tsdial.Dialer))
+	b, err := NewLocalBackend(logf, "logid", parts, 0)
 	c.Assert(err, qt.IsNil)
 
 	cc := newMockControl(t)

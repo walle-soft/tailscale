@@ -12,10 +12,8 @@ import (
 	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/dns"
 	"tailscale.com/tailcfg"
-	"tailscale.com/types/key"
 	"tailscale.com/types/netmap"
 	"tailscale.com/wgengine/filter"
-	"tailscale.com/wgengine/monitor"
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgcfg"
 )
@@ -35,9 +33,6 @@ type Status struct {
 //
 // Exactly one of Status or error is non-nil.
 type StatusCallback func(*Status, error)
-
-// NetInfoCallback is the type used by Engine.SetNetInfoCallback.
-type NetInfoCallback func(*tailcfg.NetInfo)
 
 // NetworkMapCallback is the type used by callbacks that hook
 // into network map updates.
@@ -92,9 +87,6 @@ type Engine interface {
 	// WireGuard status changes.
 	SetStatusCallback(StatusCallback)
 
-	// GetLinkMonitor returns the link monitor.
-	GetLinkMonitor() *monitor.Mon
-
 	// RequestStatus requests a WireGuard status update right
 	// away, sent to the callback registered via SetStatusCallback.
 	RequestStatus()
@@ -124,11 +116,6 @@ type Engine interface {
 	// caller of this method now. Don't add more.
 	LinkChange(isExpensive bool)
 
-	// SetDERPMap controls which (if any) DERP servers are used.
-	// If nil, DERP is disabled. It starts disabled until a DERP map
-	// is configured.
-	SetDERPMap(*tailcfg.DERPMap)
-
 	// SetNetworkMap informs the engine of the latest network map
 	// from the server. The network map's DERPMap field should be
 	// ignored as as it might be disabled; get it from SetDERPMap
@@ -141,14 +128,6 @@ type Engine interface {
 	// function that when called would remove the function from the
 	// list of callbacks.
 	AddNetworkMapCallback(NetworkMapCallback) (removeCallback func())
-
-	// SetNetInfoCallback sets the function to call when a
-	// new NetInfo summary is available.
-	SetNetInfoCallback(NetInfoCallback)
-
-	// DiscoPublicKey gets the public key used for path discovery
-	// messages.
-	DiscoPublicKey() key.DiscoPublic
 
 	// UpdateStatus populates the network state using the provided
 	// status builder.

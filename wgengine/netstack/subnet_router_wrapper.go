@@ -5,15 +5,8 @@
 package netstack
 
 import (
-	"reflect"
-
-	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/router"
 )
-
-func init() {
-	wgengine.NetstackRouterType = reflect.TypeOf(&subnetRouter{})
-}
 
 type subnetRouter struct {
 	router.Router

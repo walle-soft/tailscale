@@ -35,6 +35,7 @@ import (
 	"inet.af/netaddr"
 	"tailscale.com/envknob"
 	"tailscale.com/ipn/ipnserver"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store"
 	"tailscale.com/logpolicy"
 	"tailscale.com/net/dns"
@@ -264,6 +265,10 @@ func startIPNServer(ctx context.Context, logid string) error {
 	}
 	dialer := new(tsdial.Dialer)
 
+	parts := new(node.Parts)
+	parts.LinkMonitor.Set(linkMon)
+	parts.Dialer.Set(dialer)
+
 	getEngineRaw := func() (wgengine.Engine, error) {
 		dev, devName, err := tstun.New(logf, "Tailscale")
 		if err != nil {
@@ -296,7 +301,8 @@ func startIPNServer(ctx context.Context, logid string) error {
 			dev.Close()
 			return nil, fmt.Errorf("engine: %w", err)
 		}
-		ns, err := newNetstack(logf, dialer, eng)
+		parts.Engine.Set(eng)
+		ns, err := newNetstack(logf, parts)
 		if err != nil {
 			return nil, fmt.Errorf("newNetstack: %w", err)
 		}
@@ -369,13 +375,14 @@ func startIPNServer(ctx context.Context, logid string) error {
 	if err != nil {
 		return fmt.Errorf("store: %w", err)
 	}
+	parts.StateStore.Set(store)
 
 	ln, _, err := safesocket.Listen(args.socketpath, safesocket.WindowsLocalPort)
 	if err != nil {
 		return fmt.Errorf("safesocket.Listen: %v", err)
 	}
 
-	err = ipnserver.Run(ctx, logf, ln, store, linkMon, dialer, logid, getEngine, ipnServerOpts())
+	err = ipnserver.Run(ctx, logf, ln, parts, logid, getEngine, ipnServerOpts())
 	if err != nil {
 		logf("ipnserver.Run: %v", err)
 	}

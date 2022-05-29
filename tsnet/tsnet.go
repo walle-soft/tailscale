@@ -27,6 +27,7 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/localapi"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/nettest"
@@ -186,22 +187,19 @@ func (s *Server) start() error {
 		return err
 	}
 
+	parts := new(node.Parts)
 	s.dialer = new(tsdial.Dialer) // mutated below (before used)
 	eng, err := wgengine.NewUserspaceEngine(logf, wgengine.Config{
 		ListenPort:  0,
 		LinkMonitor: s.linkMon,
 		Dialer:      s.dialer,
+		SetPart:     parts.SetPart,
 	})
 	if err != nil {
 		return err
 	}
 
-	tunDev, magicConn, dns, ok := eng.(wgengine.InternalsGetter).GetInternals()
-	if !ok {
-		return fmt.Errorf("%T is not a wgengine.InternalsGetter", eng)
-	}
-
-	ns, err := netstack.Create(logf, tunDev, eng, magicConn, s.dialer, dns)
+	ns, err := netstack.Create(logf, parts.Tun.Get(), eng, parts.MagicSock.Get(), s.dialer, parts.DNSManager.Get())
 	if err != nil {
 		return fmt.Errorf("netstack.Create: %w", err)
 	}
@@ -226,13 +224,14 @@ func (s *Server) start() error {
 			return err
 		}
 	}
+	parts.StateStore.Set(s.Store)
 	logid := "tsnet-TODO" // https://github.com/tailscale/tailscale/issues/3866
 
 	loginFlags := controlclient.LoginDefault
 	if s.Ephemeral {
 		loginFlags = controlclient.LoginEphemeral
 	}
-	lb, err := ipnlocal.NewLocalBackend(logf, logid, s.Store, s.dialer, eng, loginFlags)
+	lb, err := ipnlocal.NewLocalBackend(logf, logid, parts, loginFlags)
 	if err != nil {
 		return fmt.Errorf("NewLocalBackend: %v", err)
 	}

@@ -15,6 +15,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 	"inet.af/netaddr"
 
+	"tailscale.com/ipn/node"
 	"tailscale.com/net/dns"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/key"
@@ -39,11 +40,13 @@ func setupWGTest(b *testing.B, logf logger.Logf, traf *TrafficGen, a1, a2 netadd
 		logf: logger.WithPrefix(logf, "tun1: "),
 		traf: traf,
 	}
+	parts1 := new(node.Parts)
 	e1, err := wgengine.NewUserspaceEngine(l1, wgengine.Config{
 		Router:      router.NewFake(l1),
 		LinkMonitor: nil,
 		ListenPort:  0,
 		Tun:         t1,
+		SetPart:     parts1.SetPart,
 	})
 	if err != nil {
 		log.Fatalf("e1 init: %v", err)
@@ -63,11 +66,13 @@ func setupWGTest(b *testing.B, logf logger.Logf, traf *TrafficGen, a1, a2 netadd
 		logf: logger.WithPrefix(logf, "tun2: "),
 		traf: traf,
 	}
+	parts2 := new(node.Parts)
 	e2, err := wgengine.NewUserspaceEngine(l2, wgengine.Config{
 		Router:      router.NewFake(l2),
 		LinkMonitor: nil,
 		ListenPort:  0,
 		Tun:         t2,
+		SetPart:     parts2.SetPart,
 	})
 	if err != nil {
 		log.Fatalf("e2 init: %v", err)
@@ -157,8 +162,8 @@ func setupWGTest(b *testing.B, logf logger.Logf, traf *TrafficGen, a1, a2 netadd
 	})
 
 	// Not using DERP in this test (for now?).
-	e1.SetDERPMap(&tailcfg.DERPMap{})
-	e2.SetDERPMap(&tailcfg.DERPMap{})
+	parts1.MagicSock.Get().SetDERPMap(&tailcfg.DERPMap{})
+	parts2.MagicSock.Get().SetDERPMap(&tailcfg.DERPMap{})
 
 	wait.Wait()
 }

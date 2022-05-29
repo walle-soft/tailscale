@@ -13,6 +13,7 @@ import (
 
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnserver"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/tsdial"
 	"tailscale.com/safesocket"
@@ -75,6 +76,10 @@ func TestRunMultipleAccepts(t *testing.T) {
 	}
 	defer ln.Close()
 
-	err = ipnserver.Run(ctx, logTriggerTestf, ln, store, nil /* mon */, new(tsdial.Dialer), "dummy_logid", ipnserver.FixedEngine(eng), opts)
+	parts := new(node.Parts)
+	parts.StateStore.Set(store)
+	parts.Dialer.Set(new(tsdial.Dialer))
+
+	err = ipnserver.Run(ctx, logTriggerTestf, ln, parts, "dummy_logid", ipnserver.FixedEngine(eng), opts)
 	t.Logf("ipnserver.Run = %v", err)
 }

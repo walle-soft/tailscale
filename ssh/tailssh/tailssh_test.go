@@ -27,8 +27,8 @@ import (
 
 	"inet.af/netaddr"
 	"tailscale.com/ipn/ipnlocal"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store/mem"
-	"tailscale.com/net/tsdial"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tempfork/gliderlabs/ssh"
 	"tailscale.com/tstest"
@@ -200,14 +200,14 @@ func timePtr(t time.Time) *time.Time { return &t }
 
 func TestSSH(t *testing.T) {
 	var logf logger.Logf = t.Logf
-	eng, err := wgengine.NewFakeUserspaceEngine(logf, 0)
+	parts := new(node.Parts)
+	eng, err := wgengine.NewFakeUserspaceEngine(logf, parts.SetPart)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := ipnlocal.NewLocalBackend(logf, "",
-		new(mem.Store),
-		new(tsdial.Dialer),
-		eng, 0)
+	parts.Engine.Set(eng)
+	parts.StateStore.Set(new(mem.Store))
+	lb, err := ipnlocal.NewLocalBackend(logf, "", parts, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

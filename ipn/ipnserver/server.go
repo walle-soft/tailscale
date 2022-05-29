@@ -36,10 +36,10 @@ import (
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnlocal"
 	"tailscale.com/ipn/localapi"
+	"tailscale.com/ipn/node"
 	"tailscale.com/logtail/backoff"
 	"tailscale.com/net/netstat"
 	"tailscale.com/net/netutil"
-	"tailscale.com/net/tsdial"
 	"tailscale.com/safesocket"
 	"tailscale.com/smallzstd"
 	"tailscale.com/types/logger"
@@ -50,7 +50,6 @@ import (
 	"tailscale.com/version"
 	"tailscale.com/version/distro"
 	"tailscale.com/wgengine"
-	"tailscale.com/wgengine/monitor"
 )
 
 // Options is the configuration of the Tailscale node agent.
@@ -659,7 +658,7 @@ func (s *Server) writeToClients(n ipn.Notify) {
 // The getEngine func is called repeatedly, once per connection, until it returns an engine successfully.
 //
 // Deprecated: use New and Server.Run instead.
-func Run(ctx context.Context, logf logger.Logf, ln net.Listener, store ipn.StateStore, linkMon *monitor.Mon, dialer *tsdial.Dialer, logid string, getEngine func() (wgengine.Engine, error), opts Options) error {
+func Run(ctx context.Context, logf logger.Logf, ln net.Listener, parts *node.Parts, logid string, getEngine func() (wgengine.Engine, error), opts Options) error {
 	getEngine = getEngineUntilItWorksWrapper(getEngine)
 	runDone := make(chan struct{})
 	defer close(runDone)
@@ -682,6 +681,8 @@ func Run(ctx context.Context, logf logger.Logf, ln net.Listener, store ipn.State
 		ln.Close()
 	}()
 	logf("Listening on %v", ln.Addr())
+
+	store := parts.StateStore.Get()
 
 	var serverModeUser *user.User
 	if opts.AutostartStateKey == "" {
@@ -742,8 +743,9 @@ func Run(ctx context.Context, logf logger.Logf, ln net.Listener, store ipn.State
 			c:        unservedConn,
 		}
 	}
+	parts.Engine.Set(eng)
 
-	server, err := New(logf, logid, store, eng, dialer, serverModeUser, opts)
+	server, err := New(logf, logid, parts, serverModeUser, opts)
 	if err != nil {
 		return err
 	}
@@ -756,8 +758,8 @@ func Run(ctx context.Context, logf logger.Logf, ln net.Listener, store ipn.State
 // New returns a new Server.
 //
 // To start it, use the Server.Run method.
-func New(logf logger.Logf, logid string, store ipn.StateStore, eng wgengine.Engine, dialer *tsdial.Dialer, serverModeUser *user.User, opts Options) (*Server, error) {
-	b, err := ipnlocal.NewLocalBackend(logf, logid, store, dialer, eng, opts.LoginFlags)
+func New(logf logger.Logf, logid string, parts *node.Parts, serverModeUser *user.User, opts Options) (*Server, error) {
+	b, err := ipnlocal.NewLocalBackend(logf, logid, parts, opts.LoginFlags)
 	if err != nil {
 		return nil, fmt.Errorf("NewLocalBackend: %v", err)
 	}
@@ -783,7 +785,7 @@ func New(logf logger.Logf, logid string, store ipn.StateStore, eng wgengine.Engi
 	}
 
 	if opts.AutostartStateKey == "" {
-		autoStartKey, err := store.ReadState(ipn.ServerModeStartKey)
+		autoStartKey, err := parts.StateStore.Get().ReadState(ipn.ServerModeStartKey)
 		if err != nil && err != ipn.ErrStateNotExist {
 			return nil, fmt.Errorf("calling ReadState on store: %w", err)
 		}

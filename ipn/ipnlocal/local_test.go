@@ -14,6 +14,7 @@ import (
 
 	"inet.af/netaddr"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/node"
 	"tailscale.com/ipn/store/mem"
 	"tailscale.com/net/interfaces"
 	"tailscale.com/net/tsaddr"
@@ -481,13 +482,16 @@ func TestLazyMachineKeyGeneration(t *testing.T) {
 	panicOnMachineKeyGeneration = true
 
 	var logf logger.Logf = logger.Discard
+	parts := new(node.Parts)
 	store := new(mem.Store)
-	eng, err := wgengine.NewFakeUserspaceEngine(logf, 0)
+	parts.StateStore.Set(store)
+	eng, err := wgengine.NewFakeUserspaceEngine(logf, parts.SetPart)
 	if err != nil {
 		t.Fatalf("NewFakeUserspaceEngine: %v", err)
 	}
+	parts.Engine.Set(eng)
 	t.Cleanup(eng.Close)
-	lb, err := NewLocalBackend(logf, "logid", store, nil, eng, 0)
+	lb, err := NewLocalBackend(logf, "logid", parts, 0)
 	if err != nil {
 		t.Fatalf("NewLocalBackend: %v", err)
 	}
