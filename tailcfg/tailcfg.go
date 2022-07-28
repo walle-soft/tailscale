@@ -881,6 +881,13 @@ type MapRequest struct {
 	Stream      bool // if true, multiple MapResponse objects are returned
 	Hostinfo    *Hostinfo
 
+	// CanDeltaFrom, if non-empty, is a request to send an incremental MapResponse
+	// from the MapResponse whose last ID value was this CanDeltaFrom value.
+	// The server may choose to ignore this and send a full MapResponse.
+	// If the server chooses to send an incremental one, MapResponse.DeltaFrom
+	// will be set.
+	CanDeltaFrom string `json:",omitempty"`
+
 	// Endpoints are the client's magicsock UDP ip:port endpoints (IPv4 or IPv6).
 	Endpoints []string
 	// EndpointTypes are the types of the corresponding endpoints in Endpoints.
@@ -1195,6 +1202,16 @@ type PingResponse struct {
 }
 
 type MapResponse struct {
+	// ID optionally specifies a unique opaque ID for this MapResponse.
+	// Servers may not send it, and it may not be sent on all messages, such
+	// as keep-alives.
+	ID string `json:",omitempty"`
+
+	// DeltaFrom declares that this MapResponse is a delta from the MapResponse
+	// that last had the ID of this DeltaFrom value. It is only included when the client
+	// sends a MapRequest.CanDeltaFrom value.
+	DeltaFrom string `json:",omitempty"`
+
 	// KeepAlive, if set, represents an empty message just to keep
 	// the connection alive. When true, all other fields except
 	// PingRequest, ControlTime, and PopBrowserURL are ignored.
