@@ -21,7 +21,7 @@ import (
 	"tailscale.com/types/views"
 )
 
-//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal
+//go:generate go run tailscale.com/cmd/cloner  -clonefunc=true -type=User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,LinuxFW
 
 // View returns a readonly view of User.
 func (p *User) View() UserView {
@@ -281,6 +281,7 @@ func (v HostinfoView) SSH_HostKeys() views.Slice[string] { return views.SliceOf(
 func (v HostinfoView) Cloud() string                     { return v.ж.Cloud }
 func (v HostinfoView) Userspace() opt.Bool               { return v.ж.Userspace }
 func (v HostinfoView) UserspaceRouter() opt.Bool         { return v.ж.UserspaceRouter }
+func (v HostinfoView) LinuxFW() LinuxFWView              { return v.ж.LinuxFW.View() }
 func (v HostinfoView) Equal(v2 HostinfoView) bool        { return v.ж.Equal(v2.ж) }
 
 // A compilation failure here means this code must be regenerated, with the command at the top of this file.
@@ -312,6 +313,7 @@ var _HostinfoViewNeedsRegeneration = Hostinfo(struct {
 	Cloud           string
 	Userspace       opt.Bool
 	UserspaceRouter opt.Bool
+	LinuxFW         *LinuxFW
 }{})
 
 // View returns a readonly view of NetInfo.
@@ -922,4 +924,61 @@ var _SSHPrincipalViewNeedsRegeneration = SSHPrincipal(struct {
 	UserLogin string
 	Any       bool
 	PubKeys   []string
+}{})
+
+// View returns a readonly view of LinuxFW.
+func (p *LinuxFW) View() LinuxFWView {
+	return LinuxFWView{ж: p}
+}
+
+// LinuxFWView provides a read-only view over LinuxFW.
+//
+// Its methods should only be called if `Valid()` returns true.
+type LinuxFWView struct {
+	// ж is the underlying mutable value, named with a hard-to-type
+	// character that looks pointy like a pointer.
+	// It is named distinctively to make you think of how dangerous it is to escape
+	// to callers. You must not let callers be able to mutate it.
+	ж *LinuxFW
+}
+
+// Valid reports whether underlying value is non-nil.
+func (v LinuxFWView) Valid() bool { return v.ж != nil }
+
+// AsStruct returns a clone of the underlying value which aliases no memory with
+// the original.
+func (v LinuxFWView) AsStruct() *LinuxFW {
+	if v.ж == nil {
+		return nil
+	}
+	return v.ж.Clone()
+}
+
+func (v LinuxFWView) MarshalJSON() ([]byte, error) { return json.Marshal(v.ж) }
+
+func (v *LinuxFWView) UnmarshalJSON(b []byte) error {
+	if v.ж != nil {
+		return errors.New("already initialized")
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	var x LinuxFW
+	if err := json.Unmarshal(b, &x); err != nil {
+		return err
+	}
+	v.ж = &x
+	return nil
+}
+
+func (v LinuxFWView) IPT() LinuxFWTypeInfo { return v.ж.IPT }
+func (v LinuxFWView) NFT() LinuxFWTypeInfo { return v.ж.NFT }
+
+func (v LinuxFWView) BinInfo() views.Map[string, LinuxFWBinInfo] { return views.MapOf(v.ж.BinInfo) }
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _LinuxFWViewNeedsRegeneration = LinuxFW(struct {
+	IPT     LinuxFWTypeInfo
+	NFT     LinuxFWTypeInfo
+	BinInfo map[string]LinuxFWBinInfo
 }{})

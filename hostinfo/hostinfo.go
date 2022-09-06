@@ -32,6 +32,7 @@ var started = time.Now()
 func New() *tailcfg.Hostinfo {
 	hostname, _ := os.Hostname()
 	hostname = dnsname.FirstLabel(hostname)
+
 	return &tailcfg.Hostinfo{
 		IPNVersion:      version.Long,
 		Hostname:        hostname,
@@ -49,6 +50,7 @@ func New() *tailcfg.Hostinfo {
 		DeviceModel:     deviceModel(),
 		Cloud:           string(cloudenv.Get()),
 		NoLogsNoSupport: envknob.NoLogsNoSupport(),
+		LinuxFW:         getLinuxFW(),
 	}
 }
 
@@ -59,6 +61,7 @@ var (
 	distroName     func() string
 	distroVersion  func() string
 	distroCodeName func() string
+	linuxFWFill    func() *tailcfg.LinuxFW
 )
 
 func condCall[T any](fn func() T) T {
@@ -117,6 +120,22 @@ func packageTypeCached() string {
 	v := packageType()
 	if v != "" {
 		SetPackage(v)
+	}
+	return v
+}
+
+var linuxFWCache atomic.Pointer[tailcfg.LinuxFW]
+
+func getLinuxFW() *tailcfg.LinuxFW {
+	if v := linuxFWCache.Load(); v != nil {
+		return v
+	}
+	if linuxFWFill == nil {
+		return nil
+	}
+	v := linuxFWFill()
+	if v != nil {
+		linuxFWCache.Store(v)
 	}
 	return v
 }

@@ -111,6 +111,7 @@ func (src *Hostinfo) Clone() *Hostinfo {
 	dst.Services = append(src.Services[:0:0], src.Services...)
 	dst.NetInfo = src.NetInfo.Clone()
 	dst.SSH_HostKeys = append(src.SSH_HostKeys[:0:0], src.SSH_HostKeys...)
+	dst.LinuxFW = src.LinuxFW.Clone()
 	return dst
 }
 
@@ -143,6 +144,7 @@ var _HostinfoCloneNeedsRegeneration = Hostinfo(struct {
 	Cloud           string
 	Userspace       opt.Bool
 	UserspaceRouter opt.Bool
+	LinuxFW         *LinuxFW
 }{})
 
 // Clone makes a deep copy of NetInfo.
@@ -398,9 +400,33 @@ var _SSHPrincipalCloneNeedsRegeneration = SSHPrincipal(struct {
 	PubKeys   []string
 }{})
 
+// Clone makes a deep copy of LinuxFW.
+// The result aliases no memory with the original.
+func (src *LinuxFW) Clone() *LinuxFW {
+	if src == nil {
+		return nil
+	}
+	dst := new(LinuxFW)
+	*dst = *src
+	if dst.BinInfo != nil {
+		dst.BinInfo = map[string]LinuxFWBinInfo{}
+		for k, v := range src.BinInfo {
+			dst.BinInfo[k] = v
+		}
+	}
+	return dst
+}
+
+// A compilation failure here means this code must be regenerated, with the command at the top of this file.
+var _LinuxFWCloneNeedsRegeneration = LinuxFW(struct {
+	IPT     LinuxFWTypeInfo
+	NFT     LinuxFWTypeInfo
+	BinInfo map[string]LinuxFWBinInfo
+}{})
+
 // Clone duplicates src into dst and reports whether it succeeded.
 // To succeed, <src, dst> must be of types <*T, *T> or <*T, **T>,
-// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal.
+// where T is one of User,Node,Hostinfo,NetInfo,Login,DNSConfig,RegisterResponse,DERPRegion,DERPMap,DERPNode,SSHRule,SSHPrincipal,LinuxFW.
 func Clone(dst, src any) bool {
 	switch src := src.(type) {
 	case *User:
@@ -508,6 +534,15 @@ func Clone(dst, src any) bool {
 			*dst = *src.Clone()
 			return true
 		case **SSHPrincipal:
+			*dst = src.Clone()
+			return true
+		}
+	case *LinuxFW:
+		switch dst := dst.(type) {
+		case *LinuxFW:
+			*dst = *src.Clone()
+			return true
+		case **LinuxFW:
 			*dst = src.Clone()
 			return true
 		}
