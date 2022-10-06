@@ -5,10 +5,13 @@
 package tka
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"golang.org/x/crypto/blake2s"
@@ -170,5 +173,223 @@ func TestTailchonkFS_Commit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(chonk.base, "M7", "M7LL2NDB4NKCZIUPVS6RDM2GUOIMW6EEAFVBWMVCPUANQJPHT3SQ")); err != nil {
 		t.Errorf("stat of AUM parent failed: %v", err)
+	}
+}
+
+func TestMarkActiveChain(t *testing.T) {
+	type aumTemplate struct {
+		AUM AUM
+	}
+
+	tcs := []struct {
+		name                string
+		minChain            int
+		chain               []aumTemplate
+		expectLastActiveIdx int // expected lastActiveAncestor, corresponds to an index on chain.
+	}{
+		{
+			name:     "genesis",
+			minChain: 2,
+			chain: []aumTemplate{
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+			},
+			expectLastActiveIdx: 0,
+		},
+		{
+			name:     "simple truncate",
+			minChain: 2,
+			chain: []aumTemplate{
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+			},
+			expectLastActiveIdx: 1,
+		},
+		{
+			name:     "long truncate",
+			minChain: 5,
+			chain: []aumTemplate{
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+			},
+			expectLastActiveIdx: 2,
+		},
+		{
+			name:     "truncate finding checkpoint",
+			minChain: 2,
+			chain: []aumTemplate{
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMAddKey, Key: &Key{}}}, // Should keep searching upwards for a checkpoint
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+				{AUM: AUM{MessageKind: AUMCheckpoint, State: &State{}}},
+			},
+			expectLastActiveIdx: 1,
+		},
+	}
+
+	for _, tc := range tcs {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict := make(map[AUMHash]retainState, len(tc.chain))
+
+			// Build the state of the tailchonk for tests.
+			storage := &Mem{}
+			var prev AUMHash
+			for i := range tc.chain {
+				if !prev.IsZero() {
+					tc.chain[i].AUM.PrevAUMHash = make([]byte, len(prev[:]))
+					copy(tc.chain[i].AUM.PrevAUMHash, prev[:])
+				}
+				if err := storage.CommitVerifiedAUMs([]AUM{tc.chain[i].AUM}); err != nil {
+					t.Fatal(err)
+				}
+
+				h := tc.chain[i].AUM.Hash()
+				prev = h
+				verdict[h] = 0
+			}
+
+			got, err := markActiveChain(storage, verdict, tc.minChain, prev)
+			if err != nil {
+				t.Logf("state = %+v", verdict)
+				t.Fatalf("markActiveChain() failed: %v", err)
+			}
+			want := tc.chain[tc.expectLastActiveIdx].AUM.Hash()
+			if got != want {
+				t.Logf("state = %+v", verdict)
+				t.Errorf("lastActiveAncestor = %v, want %v", got, want)
+			}
+
+			// Make sure the verdict array was marked correctly.
+			for i := range tc.chain {
+				h := tc.chain[i].AUM.Hash()
+				if i >= tc.expectLastActiveIdx {
+					if verdict[h] != retainStateActive {
+						t.Errorf("verdict[%v] = %v, want %v", h, verdict[h], retainStateActive)
+					}
+				} else {
+					if verdict[h] != 0 {
+						t.Errorf("verdict[%v] = %v, want %v", h, verdict[h], 0)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestMarkDescendantAUMs(t *testing.T) {
+	c := newTestchain(t, `
+        genesis -> B -> C -> C2
+                   | -> D
+                   | -> E -> F -> G -> H
+                        | -> E2
+
+        // tweak seeds so hashes arent identical
+        C.hashSeed = 1
+        D.hashSeed = 2
+        E.hashSeed = 3
+        E2.hashSeed = 4
+    `)
+
+	verdict := make(map[AUMHash]retainState, len(c.AUMs))
+	for _, a := range c.AUMs {
+		verdict[a.Hash()] = 0
+	}
+
+	// Mark E & C.
+	verdict[c.AUMHashes["C"]] = retainStateActive
+	verdict[c.AUMHashes["E"]] = retainStateActive
+
+	if err := markDescendantAUMs(c.Chonk(), verdict); err != nil {
+		t.Errorf("markDescendantAUMs() failed: %v", err)
+	}
+
+	// Make sure the descendants got marked.
+	hs := c.AUMHashes
+	for _, h := range []AUMHash{hs["C2"], hs["F"], hs["G"], hs["H"], hs["E2"]} {
+		if (verdict[h] & retainStateLeaf) == 0 {
+			t.Errorf("%v was not marked as a descendant", h)
+		}
+	}
+	for _, h := range []AUMHash{hs["genesis"], hs["B"], hs["D"]} {
+		if (verdict[h] & retainStateLeaf) != 0 {
+			t.Errorf("%v was marked as a descendant and shouldnt be", h)
+		}
+	}
+}
+
+type compactingChonkFake struct {
+	Mem
+
+	aumAge     map[AUMHash]time.Time
+	t          *testing.T
+	wantDelete []AUMHash
+}
+
+func (c *compactingChonkFake) AllAUMs() ([]AUMHash, error) {
+	out := make([]AUMHash, 0, len(c.Mem.aums))
+	for h, _ := range c.Mem.aums {
+		out = append(out, h)
+	}
+	return out, nil
+}
+
+func (c *compactingChonkFake) CommitTime(hash AUMHash) (time.Time, error) {
+	return c.aumAge[hash], nil
+}
+
+func (c *compactingChonkFake) PurgeAUMs(hashes []AUMHash) error {
+	sort.Slice(hashes, func(i, j int) bool {
+		return bytes.Compare(hashes[i][:], hashes[j][:]) < 0
+	})
+	if diff := cmp.Diff(c.wantDelete, hashes); diff != "" {
+		c.t.Errorf("deletion set differs (-want, +got):\n%s", diff)
+	}
+	return nil
+}
+
+func TestCompact(t *testing.T) {
+	fakeState := &State{
+		Keys:               []Key{{Kind: Key25519, Votes: 1}},
+		DisablementSecrets: [][]byte{bytes.Repeat([]byte{1}, 32)},
+	}
+
+	c := newTestchain(t, `
+        A -> B -> C -> D -> E -> F -> G -> H
+                  | -> F1 -> F2       | -> G2
+                  | -> OLD
+
+        // make A through D compaction candidates
+        A.template = checkpoint
+        B.template = checkpoint
+        C.template = checkpoint
+        D.template = checkpoint
+
+        // tweak seeds so hashes arent identical
+        F1.hashSeed = 1
+        OLD.hashSeed = 2
+        G2.hashSeed = 3
+    `, optTemplate("checkpoint", AUM{MessageKind: AUMCheckpoint, State: fakeState}))
+
+	storage := &compactingChonkFake{
+		Mem:        (*c.Chonk().(*Mem)),
+		aumAge:     map[AUMHash]time.Time{(c.AUMHashes["F1"]): time.Now()},
+		t:          t,
+		wantDelete: []AUMHash{c.AUMHashes["B"], c.AUMHashes["OLD"], c.AUMHashes["C"], c.AUMHashes["A"]},
+	}
+
+	lastActiveAncestor, err := Compact(storage, c.AUMHashes["H"], CompactionOptions{MinChain: 2, MinAge: time.Hour})
+	if err != nil {
+		t.Errorf("Compact() failed: %v", err)
+	}
+	if lastActiveAncestor != c.AUMHashes["D"] {
+		t.Errorf("last active ancestor = %v, want %v", lastActiveAncestor, c.AUMHashes["D"])
 	}
 }
