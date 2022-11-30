@@ -291,6 +291,44 @@ func (cc *mockControl) UpdateEndpoints(endpoints []tailcfg.Endpoint) {
 // network delays) are just ignored for now, which makes the test
 // predictable, but maybe a bit less thorough. This is more of an overall
 // state machine test than a test of the wgengine+magicsock integration.
+func TestStatusWithoutPeers(t *testing.T) {
+	logf := tstest.WhileTestRunningLogger(t)
+	store := new(testStateStorage)
+	e, err := wgengine.NewFakeUserspaceEngine(logf, 0)
+	if err != nil {
+		t.Fatalf("NewFakeUserspaceEngine: %v", err)
+	}
+	t.Cleanup(e.Close)
+
+	b, err := NewLocalBackend(logf, "logid", store, "", nil, e, 0)
+	if err != nil {
+		t.Fatalf("NewLocalBackend: %v", err)
+	}
+	var cc *mockControl
+	b.SetControlClientGetterForTesting(func(opts controlclient.Options) (controlclient.Client, error) {
+		cc = newClient(t, opts)
+
+		t.Logf("ccGen: new mockControl.")
+		cc.called("New")
+		return cc, nil
+	})
+	b.Start(ipn.Options{})
+	b.Login(nil)
+	cc.send(nil, "", false, &netmap.NetworkMap{
+		MachineStatus: tailcfg.MachineAuthorized,
+		Addresses:     ipps("100.101.101.101"),
+	})
+	{
+	}
+	got := b.StatusWithoutPeers()
+	if got.TailscaleIPs == nil {
+		t.Errorf("got nil")
+	}
+	t.Logf("hello %v", got)
+	t.Logf("test sdfdsf  %v", got.TailscaleIPs)
+
+}
+
 func TestStateMachine(t *testing.T) {
 	envknob.Setenv("TAILSCALE_USE_WIP_CODE", "1")
 	defer envknob.Setenv("TAILSCALE_USE_WIP_CODE", "")
