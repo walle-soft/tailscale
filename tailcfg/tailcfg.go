@@ -1729,6 +1729,8 @@ const (
 	CapabilityWakeOnLAN = "https://tailscale.com/cap/wake-on-lan"
 	// CapabilityIngress grants the ability for a peer to send ingress traffic.
 	CapabilityIngress = "https://tailscale.com/cap/ingress"
+	// CapabilitySSHSessionHaul grants the ability to send SSH session logs.
+	CapabilitySSHSessionHaul = "https://tailscale.com/cap/ssh-session-haul"
 
 	// Funnel warning capabilities used for reporting errors to the user.
 
@@ -1915,6 +1917,10 @@ type SSHAction struct {
 	// AllowLocalPortForwarding, if true, allows accepted connections
 	// to use local port forwarding if requested.
 	AllowLocalPortForwarding bool `json:"allowLocalPortForwarding,omitempty"`
+
+	// SessionHauling, if non-empty, is the IP address of a peer to stream this
+	// SSH session's logs to.
+	SessionHauling string `json:"sessionHauling,omitempty"`
 }
 
 // OverTLSPublicKeyResponse is the JSON response to /key?v=<n>

@@ -306,6 +306,14 @@ func (ts *localState) TailscaleVarRoot() string {
 	return ""
 }
 
+func (ts *localState) Dialer() *tsdial.Dialer {
+	return nil
+}
+
+func (ts *localState) PeerAPIBase(netip.Addr) (string, error) {
+	return "", nil
+}
+
 func newSSHRule(action *tailcfg.SSHAction) *tailcfg.SSHRule {
 	return &tailcfg.SSHRule{
 		SSHUsers: map[string]string{

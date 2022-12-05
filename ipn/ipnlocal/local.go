@@ -4028,6 +4028,25 @@ func peerAPIURL(ip netip.Addr, port uint16) string {
 	return fmt.Sprintf("http://%v", netip.AddrPortFrom(ip, port))
 }
 
+// PeerAPIBase returns the "http://ip:port" URL base to reach the peerAPI for ip.
+// It returns the empty string if the peer doesn't support the peerapi or there's
+// no matching address family based on the netmap's own addresses.
+func (b *LocalBackend) PeerAPIBase(ip netip.Addr) (peerBase string, err error) {
+	nm := b.NetMap()
+	if nm == nil {
+		return "", errors.New("no netmap")
+	}
+	peer, ok := nm.PeerByTailscaleIP(ip)
+	if !ok {
+		return "", fmt.Errorf("no peer found with Tailscale IP %v", ip)
+	}
+	base := peerAPIBase(nm, peer)
+	if base == "" {
+		return "", fmt.Errorf("no peer API base found for peer %v (%v)", peer.ID, ip)
+	}
+	return base, nil
+}
+
 // peerAPIBase returns the "http://ip:port" URL base to reach peer's peerAPI.
 // It returns the empty string if the peer doesn't support the peerapi
 // or there's no matching address family based on the netmap's own addresses.
