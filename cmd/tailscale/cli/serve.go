@@ -22,10 +22,8 @@ import (
 	"strings"
 
 	"github.com/peterbourgon/ff/v3/ffcli"
-	"golang.org/x/exp/slices"
 	"tailscale.com/ipn"
 	"tailscale.com/ipn/ipnstate"
-	"tailscale.com/tailcfg"
 	"tailscale.com/util/mak"
 	"tailscale.com/version"
 )
@@ -38,8 +36,10 @@ func newServeCommand(e *serveEnv) *ffcli.Command {
 		Name:      "serve",
 		ShortHelp: "[ALPHA] Serve from your Tailscale node",
 		ShortUsage: strings.TrimSpace(`
-  serve [flags] <mount-point> {proxy|path|text} <arg>
-  serve [flags] <sub-command> [sub-flags] <args>`),
+serve https:<serve-port> <mount-point> <target> [off]
+  serve tcp+tls:<serve-port> tcp[+tls]://localhost:<local-port> [off]
+  serve status [--json]
+`),
 		LongHelp: strings.TrimSpace(`
 *** ALPHA; all of this is subject to change ***
 
@@ -48,66 +48,37 @@ content and local servers from your Tailscale node to
 your tailnet. 
 
 You can also choose to enable the Tailscale Funnel with:
-'tailscale serve funnel on'. Funnel allows you to publish
+'tailscale funnel on'. Funnel allows you to publish
 a 'tailscale serve' server publicly, open to the entire
 internet. See https://tailscale.com/funnel.
 
 EXAMPLES
   - To proxy requests to a web server at 127.0.0.1:3000:
-    $ tailscale serve / proxy 3000
+    $ tailscale serve https:443 / http://127.0.0.1:3000
 
   - To serve a single file or a directory of files:
-    $ tailscale serve / path /home/alice/blog/index.html
-    $ tailscale serve /images/ path /home/alice/blog/images
+    $ tailscale serve https:443 / /home/alice/blog/index.html
+    $ tailscale serve https:443 /images/ /home/alice/blog/images
 
   - To serve simple static text:
-    $ tailscale serve / text "Hello, world!"
+    $ tailscale serve https:443 / text:"Hello, world!"
+
+  - To forward TLS over TCP to a local TCP server on port 8443:
+    $ tailscale serve tcp+tls:443 tcp+tls://localhost:8443
+
+  - To forward raw, TLS-terminated TCP packets to a local TCP server on port 5432:
+    $ tailscale serve tcp+tls:443 tcp://localhost:5432
 `),
-		Exec: e.runServe,
-		FlagSet: e.newFlags("serve", func(fs *flag.FlagSet) {
-			fs.BoolVar(&e.remove, "remove", false, "remove an existing serve config")
-			fs.UintVar(&e.servePort, "serve-port", 443, "port to serve on (443, 8443 or 10000)")
-		}),
+		Exec:      e.runServe,
 		UsageFunc: usageFunc,
 		Subcommands: []*ffcli.Command{
 			{
 				Name:      "status",
 				Exec:      e.runServeStatus,
-				ShortHelp: "show current serve status",
+				ShortHelp: "show current serve/funnel status",
 				FlagSet: e.newFlags("serve-status", func(fs *flag.FlagSet) {
 					fs.BoolVar(&e.json, "json", false, "output JSON")
 				}),
-				UsageFunc: usageFunc,
-			},
-			{
-				Name:      "tcp",
-				Exec:      e.runServeTCP,
-				ShortHelp: "add or remove a TCP port forward",
-				LongHelp: strings.Join([]string{
-					"EXAMPLES",
-					"  - Forward TLS over TCP to a local TCP server on port 5432:",
-					"    $ tailscale serve tcp 5432",
-					"",
-					"  - Forward raw, TLS-terminated TCP packets to a local TCP server on port 5432:",
-					"    $ tailscale serve --terminate-tls tcp 5432",
-				}, "\n"),
-				FlagSet: e.newFlags("serve-tcp", func(fs *flag.FlagSet) {
-					fs.BoolVar(&e.terminateTLS, "terminate-tls", false, "terminate TLS before forwarding TCP connection")
-				}),
-				UsageFunc: usageFunc,
-			},
-			{
-				Name:       "funnel",
-				Exec:       e.runServeFunnel,
-				ShortUsage: "funnel [flags] {on|off}",
-				ShortHelp:  "turn Tailscale Funnel on or off",
-				LongHelp: strings.Join([]string{
-					"Funnel allows you to publish a 'tailscale serve'",
-					"server publicly, open to the entire internet.",
-					"",
-					"Turning off Funnel only turns off serving to the internet.",
-					"It does not affect serving to your tailnet.",
-				}, "\n"),
 				UsageFunc: usageFunc,
 			},
 		},
@@ -133,10 +104,8 @@ func (e *serveEnv) newFlags(name string, setup func(fs *flag.FlagSet)) *flag.Fla
 // It also contains the flags, as registered with newServeCommand.
 type serveEnv struct {
 	// flags
-	servePort    uint // Port to serve on. Defaults to 443.
-	terminateTLS bool
-	remove       bool // remove a serve config
-	json         bool // output JSON (status only for now)
+	json       bool // output JSON (status only for now)
+	funnelPort uint // Port to expose the Funnel on (default 443)
 
 	// optional stuff for tests:
 	testFlagOut              io.Writer
@@ -194,21 +163,6 @@ func (e *serveEnv) setServeConfig(ctx context.Context, c *ipn.ServeConfig) error
 	return localClient.SetServeConfig(ctx, c)
 }
 
-// validateServePort returns --serve-port flag value,
-// or an error if the port is not a valid port to serve on.
-func (e *serveEnv) validateServePort() (port uint16, err error) {
-	// make sure e.servePort is uint16
-	port = uint16(e.servePort)
-	if uint(port) != e.servePort {
-		return 0, fmt.Errorf("serve-port %d is out of range", e.servePort)
-	}
-	// make sure e.servePort is 443, 8443 or 10000
-	if port != 443 && port != 8443 && port != 10000 {
-		return 0, fmt.Errorf("serve-port %d is invalid; must be 443, 8443 or 10000", e.servePort)
-	}
-	return port, nil
-}
-
 // runServe is the entry point for the "serve" subcommand, managing Web
 // serve config types like proxy, path, and text.
 //
@@ -235,39 +189,94 @@ func (e *serveEnv) runServe(ctx context.Context, args []string) error {
 		return localClient.SetServeConfig(ctx, sc)
 	}
 
-	if !(len(args) == 3 || (e.remove && len(args) >= 1)) {
+	parseServePort := func(portStr string) (uint16, error) {
+		port64, err := strconv.ParseUint(portStr, 10, 16)
+		if err != nil {
+			return 0, err
+		}
+		port := uint16(port64)
+		// make sure port is 443, 8443 or 10000
+		if port != 443 && port != 8443 && port != 10000 {
+			return 0, fmt.Errorf("serve-port %d is invalid; must be 443, 8443 or 10000", port)
+		}
+		return port, nil
+	}
+
+	srvType, srvPortStr, found := strings.Cut(args[0], ":")
+	if !found {
+		return flag.ErrHelp
+	}
+
+	turnOff := "off" == args[len(args)-1]
+
+	if len(args) < 2 || srvType == "https" && len(args) < 3 && !turnOff {
 		fmt.Fprintf(os.Stderr, "error: invalid number of arguments\n\n")
 		return flag.ErrHelp
 	}
 
-	srvPort, err := e.validateServePort()
-	if err != nil {
-		return err
-	}
-	srvPortStr := strconv.Itoa(int(srvPort))
-
-	mount, err := cleanMountPoint(args[0])
+	srvPort, err := parseServePort(srvPortStr)
 	if err != nil {
 		return err
 	}
 
-	if e.remove {
-		return e.handleWebServeRemove(ctx, mount)
+	switch srvType {
+	case "https":
+		mount, err := cleanMountPoint(args[1])
+		if err != nil {
+			return err
+		}
+		if turnOff {
+			return e.handleWebServeRemove(ctx, srvPort, mount)
+		}
+		return e.handleWebServe(ctx, srvPort, mount, args[2])
+	case "tcp+tls":
+		if turnOff {
+			return e.handleTCPServeRemove(ctx, srvPort)
+		}
+		return e.handleTCPServe(ctx, srvPort, args[1])
+	default:
+		fmt.Fprintf(os.Stderr, "error: invalid serve type %q\n", srvType)
+		fmt.Fprint(os.Stderr, "must be one of: https:<serve-port> or tcp+tls:<serve-port>\n\n", srvType)
+		return flag.ErrHelp
 	}
+}
 
+// handleWebServe handles the "tailscale serve https:..." subcommand.
+// It configures the serve config to forward HTTPS connections to the
+// given target.
+//
+// Examples:
+//   - tailscale serve https:443 / http://localhost:3000
+//   - tailscale serve https:8443 /files/ /home/alice/shared-files/
+//   - tailscale serve https:10000 /motd.txt text:"Hello, world!"
+func (e *serveEnv) handleWebServe(ctx context.Context, srvPort uint16, mount, target string) error {
 	h := new(ipn.HTTPHandler)
 
-	switch args[1] {
-	case "path":
+	ts, _, _ := strings.Cut(target, ":")
+	switch {
+	case ts == "text":
+		text := strings.TrimPrefix(target, "text:")
+		if text == "" {
+			return errors.New("unable to serve; text cannot be an empty string")
+		}
+		h.Text = text
+	case isProxyTarget(target):
+		t, err := expandProxyTarget(target)
+		if err != nil {
+			return err
+		}
+		h.Proxy = t
+	default: // assume path
 		if version.IsSandboxedMacOS() {
 			// don't allow path serving for now on macOS (2022-11-15)
 			return fmt.Errorf("path serving is not supported if sandboxed on macOS")
 		}
-		if !filepath.IsAbs(args[2]) {
+		if !filepath.IsAbs(target) {
 			fmt.Fprintf(os.Stderr, "error: path must be absolute\n\n")
 			return flag.ErrHelp
 		}
-		fi, err := os.Stat(args[2])
+		target = filepath.Clean(target)
+		fi, err := os.Stat(target)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error: invalid path: %v\n\n", err)
 			return flag.ErrHelp
@@ -277,21 +286,7 @@ func (e *serveEnv) runServe(ctx context.Context, args []string) error {
 			// for relative file links to work
 			mount += "/"
 		}
-		h.Path = args[2]
-	case "proxy":
-		t, err := expandProxyTarget(args[2])
-		if err != nil {
-			return err
-		}
-		h.Proxy = t
-	case "text":
-		if args[2] == "" {
-			return errors.New("unable to serve; text cannot be an empty string")
-		}
-		h.Text = args[2]
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown serve type %q\n\n", args[1])
-		return flag.ErrHelp
+		h.Path = target
 	}
 
 	cursc, err := e.getServeConfig(ctx)
@@ -306,7 +301,7 @@ func (e *serveEnv) runServe(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	hp := ipn.HostPort(net.JoinHostPort(dnsName, srvPortStr))
+	hp := ipn.HostPort(net.JoinHostPort(dnsName, strconv.Itoa(int(srvPort))))
 
 	if sc.IsTCPForwardingOnPort(srvPort) {
 		fmt.Fprintf(os.Stderr, "error: cannot serve web; already serving TCP\n")
@@ -345,12 +340,31 @@ func (e *serveEnv) runServe(ctx context.Context, args []string) error {
 	return nil
 }
 
-func (e *serveEnv) handleWebServeRemove(ctx context.Context, mount string) error {
-	srvPort, err := e.validateServePort()
-	if err != nil {
-		return err
+func isProxyTarget(target string) bool {
+	if strings.HasPrefix(target, "http") && strings.Index(target, "://") > 0 {
+		return true
 	}
-	srvPortStr := strconv.Itoa(int(srvPort))
+	// support "localhost:3000", for example
+	_, portStr, _ := strings.Cut(target, ":")
+	if allNumeric(portStr) && strings.HasSuffix(target, ":"+portStr) {
+		return true
+	}
+	return false
+}
+
+func allNumeric(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// handleWebServeRemove removes a web handler from the serve config.
+// The srvPort argument is the serving port and the mount argument is
+// the mount point or registered path to remove.
+func (e *serveEnv) handleWebServeRemove(ctx context.Context, srvPort uint16, mount string) error {
 	sc, err := e.getServeConfig(ctx)
 	if err != nil {
 		return err
@@ -365,9 +379,9 @@ func (e *serveEnv) handleWebServeRemove(ctx context.Context, mount string) error
 	if sc.IsTCPForwardingOnPort(srvPort) {
 		return errors.New("cannot remove web handler; currently serving TCP")
 	}
-	hp := ipn.HostPort(net.JoinHostPort(dnsName, srvPortStr))
+	hp := ipn.HostPort(net.JoinHostPort(dnsName, strconv.Itoa(int(srvPort))))
 	if !sc.WebHandlerExists(hp, mount) {
-		return errors.New("error: serve config does not exist")
+		return errors.New("error: handler does not exist")
 	}
 	// delete existing handler, then cascade delete if empty
 	delete(sc.Web[hp].Handlers, mount)
@@ -403,13 +417,6 @@ func cleanMountPoint(mount string) (string, error) {
 }
 
 func expandProxyTarget(target string) (string, error) {
-	if allNumeric(target) {
-		p, err := strconv.ParseUint(target, 10, 16)
-		if p == 0 || err != nil {
-			return "", fmt.Errorf("invalid port %q", target)
-		}
-		return "http://127.0.0.1:" + target, nil
-	}
 	if !strings.Contains(target, "://") {
 		target = "http://" + target
 	}
@@ -423,9 +430,14 @@ func expandProxyTarget(target string) (string, error) {
 	default:
 		return "", fmt.Errorf("must be a URL starting with http://, https://, or https+insecure://")
 	}
+
+	port, err := strconv.ParseUint(u.Port(), 10, 16)
+	if port == 0 || err != nil {
+		return "", fmt.Errorf("invalid port %q: %w", u.Port(), err)
+	}
+
 	host := u.Hostname()
 	switch host {
-	// TODO(shayne,bradfitz): do we want to do this?
 	case "localhost", "127.0.0.1":
 		host = "127.0.0.1"
 	default:
@@ -438,16 +450,113 @@ func expandProxyTarget(target string) (string, error) {
 	return url, nil
 }
 
-func allNumeric(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
-			return false
+// handleTCPServe handles the "tailscale serve tcp+tls:..." subcommand.
+// It configures the serve config to forward TCP connections to the
+// given target.
+//
+// Examples:
+//   - tailscale serve tcp+tls:443 tcp+tls://localhost:5432
+//   - tailscale serve tcp+tls:8443 tcp+tls://localhost:4430
+//   - tailscale serve tcp+tls:10000 tcp://localhost:8080 (TLS terminated)
+func (e *serveEnv) handleTCPServe(ctx context.Context, srvPort uint16, target string) error {
+	u, err := url.Parse(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid target %q: %v\n\n", target, err)
+		return flag.ErrHelp
+	}
+
+	var terminateTLS bool
+	switch u.Scheme {
+	case "tcp":
+		terminateTLS = true
+	case "tcp+tls":
+		terminateTLS = false
+	default:
+		fmt.Fprintf(os.Stderr, "error: invalid TCP target %q\n\n", target)
+		return flag.ErrHelp
+	}
+
+	host, targetPortStr, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid TCP target %q: %v\n\n", target, err)
+		return flag.ErrHelp
+	}
+
+	switch host {
+	case "localhost", "127.0.0.1":
+		// ok
+	default:
+		fmt.Fprintf(os.Stderr, "error: invalid TCP target %q\n", target)
+		fmt.Fprint(os.Stderr, "must be one of: localhost or 127.0.0.1\n\n", target)
+		return flag.ErrHelp
+	}
+
+	if p, err := strconv.ParseUint(targetPortStr, 10, 16); p == 0 || err != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid port %q\n\n", targetPortStr)
+		return flag.ErrHelp
+	}
+
+	cursc, err := e.getServeConfig(ctx)
+	if err != nil {
+		return err
+	}
+	sc := cursc.Clone() // nil if no config
+	if sc == nil {
+		sc = new(ipn.ServeConfig)
+	}
+
+	fwdAddr := "127.0.0.1:" + targetPortStr
+
+	if sc.IsServingWeb(srvPort) {
+		return fmt.Errorf("cannot serve TCP; already serving web on %d", srvPort)
+	}
+
+	mak.Set(&sc.TCP, srvPort, &ipn.TCPPortHandler{TCPForward: fwdAddr})
+
+	dnsName, err := e.getSelfDNSName(ctx)
+	if err != nil {
+		return err
+	}
+	if terminateTLS {
+		sc.TCP[srvPort].TerminateTLS = dnsName
+	}
+
+	if !reflect.DeepEqual(cursc, sc) {
+		if err := e.setServeConfig(ctx, sc); err != nil {
+			return err
 		}
 	}
-	return s != ""
+
+	return nil
 }
 
-// runServeStatus prints the current serve config.
+// handleTCPServeRemove removes the TCP forwarding configuration for the
+// given srvPort, or serving port.
+func (e *serveEnv) handleTCPServeRemove(ctx context.Context, srvPort uint16) error {
+	cursc, err := e.getServeConfig(ctx)
+	if err != nil {
+		return err
+	}
+	sc := cursc.Clone() // nil if no config
+	if sc == nil {
+		sc = new(ipn.ServeConfig)
+	}
+	if sc.IsServingWeb(srvPort) {
+		return fmt.Errorf("unable to remove; serving web, not TCP forwarding on serve port %d", srvPort)
+	}
+	if ph := sc.GetTCPPortHandler(srvPort); ph != nil {
+		delete(sc.TCP, srvPort)
+		// clear map mostly for testing
+		if len(sc.TCP) == 0 {
+			sc.TCP = nil
+		}
+		return e.setServeConfig(ctx, sc)
+	}
+	return errors.New("error: serve config does not exist")
+}
+
+// runServeStatus is the entry point for the "serve status"
+// subcommand and prints the current serve config.
 //
 // Examples:
 //   - tailscale status
@@ -577,153 +686,4 @@ func elipticallyTruncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
-}
-
-// runServeTCP is the entry point for the "serve tcp" subcommand and
-// manages the serve config for TCP forwarding.
-//
-// Examples:
-//   - tailscale serve tcp 5432
-//   - tailscale --serve-port=8443 tcp 4430
-//   - tailscale --serve-port=10000 --terminate-tls tcp 8080
-func (e *serveEnv) runServeTCP(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		fmt.Fprintf(os.Stderr, "error: invalid number of arguments\n\n")
-		return flag.ErrHelp
-	}
-
-	srvPort, err := e.validateServePort()
-	if err != nil {
-		return err
-	}
-
-	portStr := args[0]
-	p, err := strconv.ParseUint(portStr, 10, 16)
-	if p == 0 || err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid port %q\n\n", portStr)
-	}
-
-	cursc, err := e.getServeConfig(ctx)
-	if err != nil {
-		return err
-	}
-	sc := cursc.Clone() // nil if no config
-	if sc == nil {
-		sc = new(ipn.ServeConfig)
-	}
-
-	fwdAddr := "127.0.0.1:" + portStr
-
-	if sc.IsServingWeb(srvPort) {
-		if e.remove {
-			return fmt.Errorf("unable to remove; serving web, not TCP forwarding on serve port %d", srvPort)
-		}
-		return fmt.Errorf("cannot serve TCP; already serving web on %d", srvPort)
-	}
-
-	if e.remove {
-		if ph := sc.GetTCPPortHandler(srvPort); ph != nil && ph.TCPForward == fwdAddr {
-			delete(sc.TCP, srvPort)
-			// clear map mostly for testing
-			if len(sc.TCP) == 0 {
-				sc.TCP = nil
-			}
-			return e.setServeConfig(ctx, sc)
-		}
-		return errors.New("error: serve config does not exist")
-	}
-
-	mak.Set(&sc.TCP, srvPort, &ipn.TCPPortHandler{TCPForward: fwdAddr})
-
-	dnsName, err := e.getSelfDNSName(ctx)
-	if err != nil {
-		return err
-	}
-	if e.terminateTLS {
-		sc.TCP[srvPort].TerminateTLS = dnsName
-	}
-
-	if !reflect.DeepEqual(cursc, sc) {
-		if err := e.setServeConfig(ctx, sc); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// runServeFunnel is the entry point for the "serve funnel" subcommand and
-// manages turning on/off funnel. Funnel is off by default.
-//
-// Note: funnel is only supported on single DNS name for now. (2022-11-15)
-func (e *serveEnv) runServeFunnel(ctx context.Context, args []string) error {
-	if len(args) != 1 {
-		return flag.ErrHelp
-	}
-
-	srvPort, err := e.validateServePort()
-	if err != nil {
-		return err
-	}
-	srvPortStr := strconv.Itoa(int(srvPort))
-
-	var on bool
-	switch args[0] {
-	case "on", "off":
-		on = args[0] == "on"
-	default:
-		return flag.ErrHelp
-	}
-	sc, err := e.getServeConfig(ctx)
-	if err != nil {
-		return err
-	}
-	if sc == nil {
-		sc = new(ipn.ServeConfig)
-	}
-	st, err := e.getLocalClientStatus(ctx)
-	if err != nil {
-		return fmt.Errorf("getting client status: %w", err)
-	}
-	if err := checkHasAccess(st.Self.Capabilities); err != nil {
-		return err
-	}
-	dnsName := strings.TrimSuffix(st.Self.DNSName, ".")
-	hp := ipn.HostPort(dnsName + ":" + srvPortStr)
-	if on == sc.AllowFunnel[hp] {
-		// Nothing to do.
-		return nil
-	}
-	if on {
-		mak.Set(&sc.AllowFunnel, hp, true)
-	} else {
-		delete(sc.AllowFunnel, hp)
-		// clear map mostly for testing
-		if len(sc.AllowFunnel) == 0 {
-			sc.AllowFunnel = nil
-		}
-	}
-	if err := e.setServeConfig(ctx, sc); err != nil {
-		return err
-	}
-	return nil
-}
-
-// checkHasAccess checks three things: 1) an invite was used to join the
-// Funnel alpha; 2) HTTPS is enabled; 3) the node has the "funnel" attribute.
-// If any of these are false, an error is returned describing the problem.
-//
-// The nodeAttrs arg should be the node's Self.Capabilities which should contain
-// the attribute we're checking for and possibly warning-capabilities for Funnel.
-func checkHasAccess(nodeAttrs []string) error {
-	if slices.Contains(nodeAttrs, tailcfg.CapabilityWarnFunnelNoInvite) {
-		return errors.New("Funnel not available; an invite is required to join the alpha. See https://tailscale.com/kb/1223/tailscale-funnel/.")
-	}
-	if slices.Contains(nodeAttrs, tailcfg.CapabilityWarnFunnelNoHTTPS) {
-		return errors.New("Funnel not available; HTTPS must be enabled. See https://tailscale.com/kb/1153/enabling-https/.")
-	}
-	if !slices.Contains(nodeAttrs, tailcfg.NodeAttrFunnel) {
-		return errors.New("Funnel not available; \"funnel\" node attribute not set. See https://tailscale.com/kb/1223/tailscale-funnel/.")
-	}
-	return nil
 }
